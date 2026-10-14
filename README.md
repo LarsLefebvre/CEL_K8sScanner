@@ -2,6 +2,8 @@
 
 A Kubernetes security scanner written in Go. It reads your cluster through the Kubernetes API (read-only, no access to Secrets), checks it with **CEL policies** mapped to [MITRE ATT&CK](https://attack.mitre.org/matrices/enterprise/containers/) and the [Kubernetes Threat Matrix](https://kubernetes-threat-matrix.redguard.ch/), and shows every finding with the the fixed YAML to apply it (based on business needs)
 
+https://github.com/user-attachments/assets/949390e0-9e61-4d92-8d2b-859f52b75a0d
+
 ## 1. Top 3 features ideas
 
 **Policies written in CEL.** Every check is a  YAML file with a CEL expression. I picked CEL because Kubernetes already uses it for ValidatingAdmissionPolicy and CRD validation, so most people working with Kubernetes can read it. It also servers as the backbone for known policy engines like Kyverno and KubeWarden. Custom policies live in a ConfigMap and are reloaded on every scan which makes it portable and not dependend on application code.
