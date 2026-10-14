@@ -1,0 +1,81 @@
+# Deliberately risky RBAC for the kscan playground.
+#
+# Expected findings: admin-binding (critical), anonymous-access (critical),
+# exec-into-containers (high). The unbound `rbac-manager` role is dangerous on
+# paper but grants nothing, so it is intentionally not reported.
+
+# A human with permanent cluster-admin.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alice-cluster-admin
+subjects:
+  - kind: User
+    name: alice@example.com
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+---
+# "Everyone should be able to look around": every user and every service
+# account in the cluster can now read (almost) everything.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: everyone-can-view
+subjects:
+  - kind: Group
+    name: system:authenticated
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+---
+# CI was given a shell into every pod "for debugging".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-bot
+  namespace: vuln-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: debugger
+  namespace: vuln-demo
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-bot-debugger
+  namespace: vuln-demo
+subjects:
+  - kind: ServiceAccount
+    name: ci-bot
+    namespace: vuln-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: debugger
+---
+# Dangerous, but bound to nobody: not a finding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rbac-manager
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "roles"]
+    verbs: ["escalate", "bind"]
+  - apiGroups: [""]
+    resources: ["users", "groups"]
+    verbs: ["impersonate"]

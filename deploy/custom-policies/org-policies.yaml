@@ -1,0 +1,36 @@
+# Example organisation-specific policy, loaded on top of the built-in library
+# and hot-reloaded from the kscan-policies ConfigMap. Reusing a built-in id
+# overrides it; add `disabled: true` to turn one off.
+#
+# `tactic`, `mitre` and `threatMatrix` must reference real entries of the
+# MITRE ATT&CK Containers matrix and the Redguard Kubernetes Threat Matrix;
+# the policy is rejected otherwise.
+
+id: approved-registries
+name: Images must come from an approved registry
+severity: high
+tactic: Execution
+mitre: [T1204.003]
+threatMatrix: [initial-access/compromised-images-in-registry]
+match:
+  kinds: [Workload]
+variables:
+  - name: allowed
+    expression: "['docker.io', 'registry.k8s.io', 'ghcr.io']"
+  - name: initNames
+    expression: podSpec.?initContainers.orValue([]).map(i, i.name)
+violations: |
+  containers
+    // Images without a registry host ("busybox", "nginxinc/x") come from docker.io.
+    .map(c, {'c': c, 'registry': c.image.split('/').size() > 1 &&
+        (c.image.split('/')[0].contains('.') || c.image.split('/')[0].contains(':'))
+      ? c.image.split('/')[0] : 'docker.io'})
+    .filter(x, !(x.registry in variables.allowed))
+    .map(x, {
+      'message': 'container "' + x.c.name + '" pulls from unapproved registry ' + x.registry,
+      'path': podSpecPath,
+      'found': {(x.c.name in variables.initNames ? 'initContainers' : 'containers'): [{'name': x.c.name, 'image': x.c.image}]},
+      'fix': {(x.c.name in variables.initNames ? 'initContainers' : 'containers'): [
+        {'name': x.c.name, 'image': 'registry.k8s.io/<mirrored-image>'}]}
+    })
+remediation: Mirror the image into an approved registry, or add the registry to the allow-list in this policy.

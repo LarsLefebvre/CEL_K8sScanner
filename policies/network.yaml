@@ -1,0 +1,76 @@
+# Network exposure policies.
+
+id: exposed-service
+name: Service exposed outside the cluster
+severity: medium
+tactic: Initial Access
+mitre: [T1190]
+threatMatrix: [initial-access/application-vulnerability]
+description: LoadBalancer Services without source ranges are usually reachable from the internet; NodePorts open the port on every node. Any vulnerability in the backing app becomes an entry point.
+match:
+  kinds: [Service]
+variables:
+  - name: type
+    expression: object.spec.?type.orValue('ClusterIP')
+violations: |
+  variables.type == 'LoadBalancer' && object.spec.?loadBalancerSourceRanges.orValue([]).size() == 0
+    ? [{
+        'message': 'exposed via a public LoadBalancer with no source IP restriction',
+        'path': 'spec',
+        'found': {'type': 'LoadBalancer'},
+        'fix': {'type': 'LoadBalancer', 'loadBalancerSourceRanges': ['203.0.113.0/24']}
+      }]
+    : variables.type == 'NodePort'
+      ? [{
+          'message': 'exposed on every node via NodePort',
+          'path': 'spec',
+          'found': {'type': 'NodePort', 'ports': object.spec.ports.map(p, {'port': p.port, ?'nodePort': p.?nodePort})},
+          // `nodePort: null` drops the allocated port when switching to ClusterIP.
+          'fix': {'type': 'ClusterIP', 'ports': object.spec.ports.map(p, {'port': p.port, 'nodePort': null})}
+        }]
+      : []
+remediation: >-
+  Restrict a LoadBalancer to the client IP ranges that need it (replace the example range), or keep the Service
+  internal (ClusterIP) and publish it through an Ingress/Gateway with authentication.
+---
+id: missing-network-policy
+name: Namespace has no NetworkPolicy
+severity: medium
+tactic: Discovery
+mitre: [T1046]
+threatMatrix:
+  - lateral-movement/cluster-internal-networking
+  - discovery/network-mapping
+description: Without a NetworkPolicy every pod accepts traffic from every other pod, so one compromised pod can map and reach every service in the cluster.
+match:
+  kinds: [Namespace]
+variables:
+  - name: ns
+    expression: object.metadata.name
+violations: |
+  cluster.workloadCounts[?variables.ns].orValue(0) > 0 &&
+    !cluster.networkPolicies.exists(p, p.metadata.namespace == variables.ns)
+    ? [{
+        'message': 'namespace runs workloads but has no NetworkPolicy, so all traffic is allowed',
+        // The problem is an absence: show the namespace that has no policy.
+        'found': {'apiVersion': 'v1', 'kind': 'Namespace', 'metadata': {'name': variables.ns}},
+        'fix': {
+          'apiVersion': 'networking.k8s.io/v1',
+          'kind': 'NetworkPolicy',
+          'metadata': {'name': 'default-deny', 'namespace': variables.ns},
+          'spec': {
+            'podSelector': {},
+            'policyTypes': ['Ingress', 'Egress'],
+            'egress': [{
+              'to': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'kube-system'}}}],
+              'ports': [{'protocol': 'UDP', 'port': 53}, {'protocol': 'TCP', 'port': 53}]
+            }]
+          }
+        }
+      }]
+    : []
+remediation: >-
+  Apply a default-deny policy (DNS stays allowed), then add one NetworkPolicy per flow your apps need,
+  for example allowing ingress to the web pods on their port.
+references:
+  - https://kubernetes.io/docs/concepts/services-networking/network-policies/#default-policies

@@ -1,0 +1,43 @@
+# Read-only access to exactly the resource types kscan evaluates.
+# Secrets and ConfigMaps are intentionally NOT readable.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kscan
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kscan-reader
+rules:
+  - apiGroups: [""]
+    resources: [namespaces, pods, services, serviceaccounts]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes]        # cluster metadata only (versions, roles, readiness)
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies, ingresses]
+    verbs: [get, list, watch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, clusterroles, rolebindings, clusterrolebindings]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kscan-reader
+subjects:
+  - kind: ServiceAccount
+    name: kscan
+    namespace: kscan
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kscan-reader

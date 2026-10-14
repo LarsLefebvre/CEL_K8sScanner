@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kscan
+  labels: {app: kscan, team: platform-security}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: kscan}
+  template:
+    metadata:
+      labels: {app: kscan}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: kscan
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: kscan
+          image: kscan
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --listen=:8080
+            - --interval=2m
+            - --policies=/etc/kscan/policies
+          env:
+            # Shown in the UI and reports. Set this to your cluster's name.
+            - name: KSCAN_CLUSTER_NAME
+              value: kscan-playground
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: {fieldPath: metadata.namespace}
+          ports:
+            - {name: http, containerPort: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          volumeMounts:
+            - {name: policies, mountPath: /etc/kscan/policies, readOnly: true}
+      volumes:
+        - name: policies
+          configMap:
+            name: kscan-policies
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kscan
+  labels: {app: kscan}
+spec:
+  selector: {app: kscan}
+  ports:
+    - {name: http, port: 8080, targetPort: http}

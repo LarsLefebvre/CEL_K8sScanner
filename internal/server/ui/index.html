@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kscan</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #fff; --text: #16191d; --muted: #646c78; --faint: #9aa1ab; --border: #e2e5ea;
+    --accent: #2f6feb; --accent-soft: #e8effd; --code: #f1f3f6; --hover: #fafbfc;
+    --critical: #c4320a; --high: #e8590c; --medium: #d29b0c; --low: #2b8ab0; --info: #7b8491; --ok: #1f9d55;
+    --critical-soft: #fdece6; --high-soft: #fef1e7; --medium-soft: #fdf6e3; --low-soft: #e8f4f9; --info-soft: #f0f1f3;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1115; --panel: #161a20; --text: #e7e9ec; --muted: #9aa2ad; --faint: #6b7380; --border: #272d36;
+      --accent: #6b9cff; --accent-soft: #1b2638; --code: #1d222a; --hover: #1a1f26;
+      --critical: #ff6b4a; --high: #ff9248; --medium: #f2c94c; --low: #5fb8dc; --info: #9aa2ad; --ok: #4cc38a;
+      --critical-soft: #3a1a12; --high-soft: #3a2312; --medium-soft: #352c10; --low-soft: #12303c; --info-soft: #23272e;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  main a { color: var(--accent); }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  button { font: inherit; color: inherit; }
+  header { display: flex; align-items: center; gap: 28px; padding: 0 28px; height: 56px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2; }
+  .logo { font-weight: 700; font-size: 17px; letter-spacing: .2px; display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .logo svg { color: var(--accent); }
+  nav { display: flex; gap: 4px; height: 100%; }
+  nav a { display: flex; align-items: center; padding: 0 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; }
+  nav a.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  #status { margin-left: auto; color: var(--muted); font-size: 13px; display: flex; gap: 14px; align-items: center; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 6px; }
+  .dot.busy { background: var(--medium); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  main { padding: 28px; max-width: 1240px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 16px; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 22px; }
+  .btn { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 7px 14px; cursor: pointer; font-weight: 500; }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .btn:disabled { opacity: .6; cursor: default; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+  .err { background: var(--critical-soft); border: 1px solid var(--critical); color: var(--text); border-radius: 8px; padding: 10px 14px; white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; margin-bottom: 16px; }
+  .empty { text-align: center; padding: 48px 20px; color: var(--muted); }
+
+  /* cluster cards */
+  .clusters { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 18px; }
+  .ccard { padding: 22px 24px; cursor: pointer; transition: border-color .15s, transform .15s; display: grid; grid-template-columns: 1fr auto; gap: 18px 24px; }
+  .ccard:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .ccard .name { font-size: 19px; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .badge { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+  .badge.gray { background: var(--code); color: var(--muted); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px 18px; margin-top: 14px; }
+  .fact .k { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; }
+  .fact .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ccard .bottom { grid-column: 1 / -1; }
+  .sevbar { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--code); margin-bottom: 12px; }
+  .sevbar span { height: 100%; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font-weight: 600; font-size: 13px; border: 1px solid transparent; background: var(--code); cursor: pointer; }
+  .chip:hover { border-color: currentColor; }
+  .chip .n { font-variant-numeric: tabular-nums; }
+  .chip.zero { opacity: .45; cursor: default; } .chip.zero:hover { border-color: transparent; }
+  .cta { color: var(--accent); font-weight: 600; margin-left: auto; align-self: center; white-space: nowrap; }
+
+  .gauge { position: relative; width: 92px; height: 92px; }
+  .gauge svg { transform: rotate(-90deg); }
+  .gauge .val { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; line-height: 1.1; }
+  .gauge .val b { font-size: 24px; } .gauge .val small { color: var(--muted); font-size: 11px; display: block; }
+
+  /* cluster detail */
+  .crumbs { color: var(--muted); margin-bottom: 12px; font-size: 13px; } .crumbs a { color: var(--accent); text-decoration: none; }
+  .detail-head { padding: 18px 22px; display: flex; gap: 20px; align-items: center; margin-bottom: 22px; }
+  .detail-head .info { flex: 1; min-width: 0; }
+  .detail-head .name { font-size: 20px; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .meta { color: var(--muted); margin-top: 4px; font-size: 13px; }
+  .meta b { color: var(--text); font-weight: 600; }
+  .nodes-toggle { margin-top: 8px; font-size: 13px; }
+  .nodes-toggle summary { cursor: pointer; color: var(--accent); width: fit-content; }
+  .node { display: grid; grid-template-columns: 12px minmax(150px, 1.3fr) 1fr 1fr 1.6fr; gap: 12px; color: var(--muted); align-items: center; padding: 4px 0; }
+  .node b { color: var(--text); font-weight: 600; }
+  .gauge.sm { width: 72px; height: 72px; } .gauge.sm .val b { font-size: 19px; }
+
+  .sevtabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+  .sevtab { background: none; border: none; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer; color: var(--muted); display: flex; gap: 8px; align-items: center; margin-bottom: -1px; }
+  .sevtab .n { font-weight: 700; color: var(--c); font-variant-numeric: tabular-nums; }
+  .sevtab.active { color: var(--text); border-bottom-color: var(--c); font-weight: 600; }
+  .sevtab:disabled { opacity: .4; cursor: default; }
+  .toolbar { margin-bottom: 12px; }
+  input[type=search], select, textarea { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 7px 10px; font: inherit; }
+  input[type=search] { width: 100%; }
+
+  .sev { display: inline-block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; padding: 2px 7px; border-radius: 4px; color: #fff; background: var(--c); }
+  .flist { display: grid; gap: 10px; }
+  .fcard { overflow: hidden; }
+  .fcard > summary { list-style: none; cursor: pointer; padding: 14px 18px; display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: baseline; }
+  .fcard > summary::-webkit-details-marker { display: none; }
+  .fcard > summary:hover { background: var(--hover); }
+  .fcard .msg { font-weight: 600; }
+  .fcard .ctx { grid-column: 2; color: var(--muted); font-size: 13px; }
+  .fcard .ctx .res { color: var(--text); }
+  .chev { color: var(--muted); transition: transform .15s; grid-row: 1; grid-column: 3; }
+  .fcard[open] .chev { transform: rotate(90deg); }
+  .fbody { padding: 4px 18px 18px; border-top: 1px solid var(--border); }
+  .fbody p.why { margin: 14px 0; }
+  .fbody p.why code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  .yamls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ybox { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; min-width: 0; }
+  .ybox .yh { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--border); background: var(--code); }
+  .ybox .yh .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ybox.bad .yh { color: var(--critical); } .ybox.good .yh { color: var(--ok); }
+  .ybox pre { margin: 0; padding: 10px 0; overflow-x: auto; background: var(--panel); line-height: 1.55; }
+  .ybox pre .ln { display: block; padding: 0 12px; white-space: pre; }
+  .ybox.bad pre .ln.chg { background: var(--critical-soft); }
+  .ybox.good pre .ln.chg { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .yk { color: var(--accent); } .yv-lit { color: var(--medium); } .yc { color: var(--faint); }
+  .copy { background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 1px 8px; font-size: 11.5px; cursor: pointer; color: var(--muted); font-weight: 500; }
+  .copy:hover { color: var(--text); border-color: var(--accent); }
+  .cmd { margin-top: 12px; display: flex; align-items: center; gap: 10px; background: var(--code); border-radius: 8px; padding: 8px 12px; }
+  .cmd code { flex: 1; overflow-x: auto; white-space: nowrap; }
+  .cmd .lbl { color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .refs { margin-top: 14px; font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  .refs a { color: var(--muted); text-decoration: underline; text-decoration-color: var(--border); }
+  .refs a:hover { color: var(--accent); }
+  @media (max-width: 760px) {
+    main { padding: 18px 14px; }
+    header { padding: 0 14px; gap: 12px; } nav a { padding: 0 6px; font-size: 13px; white-space: nowrap; } #statusText, .logo .word { display: none; } #rescan { padding: 5px 10px; }
+    .yamls { grid-template-columns: 1fr; } .node { grid-template-columns: 12px 1fr 1fr; } .node .hide-sm { display: none; }
+    .ccard { grid-template-columns: 1fr; } .detail-head { flex-direction: column; align-items: flex-start; }
+    .fcard > summary { padding: 12px 14px; } .fbody { padding: 4px 14px 14px; }
+  }
+
+  /* policy taxonomy chips */
+  .tax { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; align-items: center; font-size: 12px; }
+  .tax a, .tax span.t { display: inline-flex; gap: 5px; align-items: center; padding: 2px 8px; border-radius: 5px; text-decoration: none; border: 1px solid var(--border); color: var(--text); background: var(--panel); }
+  .tax a:hover { border-color: var(--accent); }
+  .tax .src { font-size: 10.5px; font-weight: 700; letter-spacing: .3px; color: var(--muted); text-transform: uppercase; }
+  .tax .mitre b { color: var(--critical); font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+  .tax .tactic { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+  .fix { margin-top: 6px; background: var(--code); border-radius: 7px; padding: 9px 12px; font-size: 13px; }
+  .fix code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
+
+  /* playground + policies */
+  .pg { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .pg { grid-template-columns: 1fr; } }
+  .pg label.t { display: block; font-weight: 600; margin: 0 0 6px; }
+  .pg textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.45; resize: vertical; tab-size: 2; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+  .help { padding: 14px 18px; font-size: 13px; margin-top: 18px; }
+  .help code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+  .help ul { margin: 6px 0 0; padding-left: 18px; }
+  .pol { padding: 14px 18px; margin-bottom: 10px; }
+  .pol summary { cursor: pointer; display: flex; gap: 10px; align-items: center; list-style: none; }
+  .pol summary::-webkit-details-marker { display: none; }
+  .pol pre { background: var(--code); padding: 10px 12px; border-radius: 7px; white-space: pre-wrap; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo" onclick="location.hash='#/'">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+    <span class="word">kscan</span>
+  </div>
+  <nav>
+    <a href="#/" data-nav="clusters">Clusters</a>
+    <a href="#/playground" data-nav="playground">Playground</a>
+    <a href="#/policies" data-nav="policies">Policies</a>
+  </nav>
+  <div id="status"><span id="statusText"><span class="dot"></span>loading…</span><button class="btn ghost" id="rescan">Rescan</button></div>
+</header>
+
+<main>
+  <div id="banner"></div>
+  <section id="view-clusters"></section>
+  <section id="view-cluster" hidden></section>
+
+  <section id="view-playground" hidden>
+    <h1>Policy playground</h1>
+    <p class="sub">Write or tweak a CEL policy and evaluate it against the live cluster or pasted manifests. Nothing is saved.</p>
+    <div class="pg">
+      <div>
+        <label class="t" for="pgPolicy">Policy (YAML)</label>
+        <div class="row"><select id="pgExample"><option value="">Start from a built-in policy…</option></select></div>
+        <textarea id="pgPolicy" rows="22" spellcheck="false"></textarea>
+      </div>
+      <div>
+        <label class="t" for="pgManifests">Evaluate against</label>
+        <div class="row">
+          <label><input type="radio" name="pgTarget" value="live" checked> Live cluster (latest scan)</label>
+          <label><input type="radio" name="pgTarget" value="manifests"> Pasted manifests</label>
+        </div>
+        <textarea id="pgManifests" rows="22" spellcheck="false" disabled></textarea>
+      </div>
+    </div>
+    <div class="row"><button class="btn" id="pgRun">Evaluate</button><span class="sub" style="margin:0" id="pgMeta"></span></div>
+    <div id="pgOut"></div>
+    <div class="panel help">
+      <strong>How policies work.</strong> <code>violations</code> is a CEL expression returning <code>true</code> (one finding, using <code>message</code>) or a <code>list(string)</code> (one finding per element).
+      <ul>
+        <li><code>object</code>: the resource. <code>podSpec</code> / <code>containers</code>: its pod spec and all (init/ephemeral) containers.</li>
+        <li><code>variables.&lt;name&gt;</code>: named expressions from the policy's <code>variables</code> list.</li>
+        <li><code>cluster.clusterRoles[name]</code>, <code>cluster.roles['ns/name']</code>, <code>cluster.serviceAccounts['ns/name']</code>, <code>cluster.networkPolicies</code>, <code>cluster.workloadCounts[ns]</code>.</li>
+        <li><code>rules.allows(verb, apiGroup, resource)</code>: RBAC check with Kubernetes wildcard semantics.</li>
+        <li><code>tactic</code>, <code>mitre</code> and <code>threatMatrix</code> must reference real MITRE ATT&amp;CK Containers techniques (e.g. <code>T1611</code>) and Kubernetes Threat Matrix paths (e.g. <code>privilege-escalation/privileged-container</code>); anything else is rejected.</li>
+        <li>Use <code>a.?b.?c.orValue(x)</code> for optional fields. Kind <code>Workload</code> matches top-level controllers and unowned pods.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="view-policies" hidden>
+    <h1>Policies</h1>
+    <p class="sub">Every check is a CEL policy mapped to <a href="https://attack.mitre.org/matrices/enterprise/containers/" target="_blank" rel="noopener">MITRE ATT&amp;CK (Containers)</a> techniques and the <a href="https://kubernetes-threat-matrix.redguard.ch/" target="_blank" rel="noopener">Kubernetes Threat Matrix</a>, grouped by ATT&amp;CK tactic. Built-ins are embedded in the binary; organisation policies come from the <code>kscan-policies</code> ConfigMap.</p>
+    <div id="policyList"></div>
+  </section>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const SEVS = ['critical', 'high', 'medium', 'low', 'info'];
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const md = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const sevStyle = (s) => `--c:var(--${s});--soft:var(--${s}-soft)`;
+const ago = (t) => { const s = Math.round((Date.now() - new Date(t)) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s/60)}m ago` : new Date(t).toLocaleString(); };
+const resName = (r) => r.namespace ? `${r.kind} ${r.namespace}/${r.name}` : `${r.kind}/${r.name}`;
+
+let report = null, policies = [], status = {};
+
+/* ---------- routing ---------- */
+function route() {
+  const [, view = '', arg] = location.hash.split('/');
+  const name = view === 'cluster' ? 'cluster' : view || 'clusters';
+  document.querySelectorAll('main > section').forEach(s => s.hidden = s.id !== 'view-' + name);
+  document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === (name === 'cluster' ? 'clusters' : name)));
+  if (name === 'clusters') renderClusters();
+  if (name === 'cluster') renderCluster(arg);
+}
+window.addEventListener('hashchange', route);
+
+/* ---------- data ---------- */
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body;
+}
+
+async function refresh() {
+  try {
+    status = await api('/api/status');
+    $('#statusText').innerHTML = status.scanning ? '<span class="dot busy"></span>scanning…' :
+      status.lastScan ? `<span class="dot"></span>scanned ${ago(status.lastScan)} · every ${esc(status.interval)}` : '<span class="dot busy"></span>waiting for first scan…';
+    $('#banner').innerHTML = status.policyError ? `<div class="err">Policy reload failed; still using the previous policies:\n${esc(status.policyError)}</div>` :
+      status.lastError ? `<div class="err">Last scan failed: ${esc(status.lastError)}</div>` : '';
+    const rep = await api('/api/report').catch(() => null);
+    if (rep && (!report || rep.generatedAt !== report.generatedAt)) { report = rep; route(); }
+    if (!policies.length) { policies = await api('/api/policies'); renderPolicies(); }
+  } catch (e) { $('#statusText').textContent = 'error: ' + e.message; }
+}
+
+/* ---------- shared bits ---------- */
+function gauge(score, size = '') {
+  const r = 38, c = 2 * Math.PI * r, col = score >= 80 ? 'var(--ok)' : score >= 50 ? 'var(--medium)' : 'var(--critical)';
+  return `<div class="gauge ${size}" title="Posture score: 100 means no findings"><svg width="100%" height="100%" viewBox="0 0 92 92" aria-hidden="true">
+    <circle cx="46" cy="46" r="${r}" fill="none" stroke="var(--code)" stroke-width="8"/>
+    <circle cx="46" cy="46" r="${r}" fill="none" stroke="${col}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${c * score / 100} ${c}"/></svg>
+    <div class="val"><div><b>${score}</b><small>score</small></div></div></div>`;
+}
+
+function facts(rep) {
+  const c = rep.cluster, nodes = c.nodes || [], ready = nodes.filter(n => n.ready).length;
+  const items = [
+    ['Kubernetes', c.version || 'n/a'],
+    ['Nodes', nodes.length ? `${ready}/${nodes.length} ready` : 'n/a'],
+    ['Namespaces', c.namespaces],
+    ['Workloads', c.workloads],
+    ['Objects scanned', rep.objectsScanned],
+    ['Last scan', ago(rep.generatedAt)],
+  ];
+  return `<div class="facts">${items.map(([k, v]) => `<div class="fact"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join('')}</div>`;
+}
+
+function sevChips(rep, onclick) {
+  const s = rep.summary.bySeverity, total = rep.summary.total || 1;
+  const bar = SEVS.filter(v => s[v]).map(v => `<span style="width:${s[v] / total * 100}%;background:var(--${v})" title="${s[v]} ${v}"></span>`).join('');
+  const chips = SEVS.filter(v => v !== 'info' || s[v]).map(v => `<span class="chip ${s[v] ? '' : 'zero'}" style="color:var(--${v})" data-sev="${v}">
+      <span class="n">${s[v] || 0}</span><span style="color:var(--text);font-weight:500">${cap(v)}</span></span>`).join('');
+  return `<div class="sevbar">${bar}</div><div class="chips">${chips}<span class="cta">View findings →</span></div>`;
+}
+
+/* ---------- clusters overview ---------- */
+function renderClusters() {
+  const el = $('#view-clusters');
+  if (!report) { el.innerHTML = `<h1>Clusters</h1><div class="panel empty">Waiting for the first scan to complete…</div>`; return; }
+  const c = report.cluster;
+  el.innerHTML = `<h1>Clusters</h1><p class="sub">Select a cluster to see its findings by severity.</p>
+    <div class="clusters">
+      <div class="panel ccard" id="cc" role="link" tabindex="0" aria-label="Open cluster ${esc(c.name)}">
+        <div>
+          <div class="name">${esc(c.name)} ${c.platform ? `<span class="badge">${esc(c.platform)}</span>` : ''}</div>
+          <div class="sub mono" style="margin:4px 0 0">${esc(c.server || report.source)}</div>
+          ${facts(report)}
+        </div>
+        ${gauge(report.summary.score)}
+        <div class="bottom">${sevChips(report)}</div>
+      </div>
+    </div>`;
+  const open = (sev) => location.hash = `#/cluster/${sev || firstSev()}`;
+  $('#cc').onclick = (e) => { const chip = e.target.closest('.chip:not(.zero)'); open(chip?.dataset.sev); };
+  $('#cc').onkeydown = (e) => { if (e.key === 'Enter') open(); };
+}
+
+const firstSev = () => SEVS.find(v => report.summary.bySeverity[v]) || 'critical';
+
+/* ---------- cluster detail ---------- */
+let filterText = '';
+function renderCluster(sev) {
+  const el = $('#view-cluster');
+  if (!report) { el.innerHTML = `<div class="panel empty">Waiting for the first scan…</div>`; return; }
+  const keepOpen = [...el.querySelectorAll('.fcard[open]')].map(d => d.dataset.key);
+  const keepNodes = el.querySelector('.nodes-toggle')?.open;
+  sev = SEVS.includes(sev) ? sev : firstSev();
+  const c = report.cluster, s = report.summary.bySeverity, nodes = c.nodes || [];
+  const ready = nodes.filter(n => n.ready).length;
+  const meta = [
+    c.version && `Kubernetes <b>${esc(c.version)}</b>`,
+    nodes.length && `<b>${ready}/${nodes.length}</b> nodes ready`,
+    `<b>${c.namespaces}</b> namespaces`,
+    `<b>${c.workloads}</b> workloads`,
+    `scanned ${ago(report.generatedAt)}`,
+  ].filter(Boolean).join(' · ');
+  el.innerHTML = `
+    <div class="crumbs"><a href="#/">Clusters</a> › ${esc(c.name)}</div>
+    <div class="panel detail-head">
+      <div class="info">
+        <div class="name">${esc(c.name)} ${c.platform ? `<span class="badge">${esc(c.platform)}</span>` : ''}</div>
+        <div class="meta">${meta}</div>
+        ${nodes.length ? `<details class="nodes-toggle" ${keepNodes ? 'open' : ''}><summary>Show nodes</summary>${nodes.map(n => `<div class="node">
+            <span class="dot" style="background:${n.ready ? 'var(--ok)' : 'var(--critical)'}" title="${n.ready ? 'Ready' : 'NotReady'}"></span>
+            <b>${esc(n.name)}</b><span>${esc((n.roles || []).join(', ') || 'worker')}</span>
+            <span class="hide-sm">${esc(n.version)}</span><span class="hide-sm">${esc(n.os)} · ${esc(n.runtime)}</span></div>`).join('')}</details>` : ''}
+      </div>
+      ${gauge(report.summary.score, 'sm')}
+    </div>
+    <div class="sevtabs" role="tablist">${SEVS.filter(v => v !== 'info' || s[v]).map(v => `<button class="sevtab ${v === sev ? 'active' : ''}" role="tab" aria-selected="${v === sev}" style="${sevStyle(v)}" data-sev="${v}" ${s[v] ? '' : 'disabled'}>
+        ${cap(v)} <span class="n">${s[v] || 0}</span></button>`).join('')}</div>
+    ${(s[sev] || 0) > 8 ? `<div class="toolbar"><input type="search" id="q" placeholder="Filter by resource, namespace or technique (e.g. T1611)" value="${esc(filterText)}"></div>` : ''}
+    <div id="flist" class="flist"></div>`;
+  el.querySelectorAll('.sevtab').forEach(b => b.onclick = () => location.hash = `#/cluster/${b.dataset.sev}`);
+  if ($('#q')) $('#q').oninput = (e) => { filterText = e.target.value; renderFindingList(sev); };
+  renderFindingList(sev, keepOpen);
+}
+
+function renderFindingList(sev, keepOpen) {
+  const q = $('#q') ? filterText.toLowerCase() : '';
+  const fs = report.findings.filter(f => f.severity === sev &&
+    (!q || [resName(f.resource), f.policyName, f.message, techText(f)].join(' ').toLowerCase().includes(q)));
+  const open = new Set(keepOpen || [...document.querySelectorAll('#flist .fcard[open]')].map(d => d.dataset.key));
+  $('#flist').innerHTML = findingsHTML(fs, `No ${sev} findings${q ? ' match this filter' : ''}.`);
+  document.querySelectorAll('#flist .fcard').forEach(d => { if (open.has(d.dataset.key)) d.open = true; });
+  wireCopy($('#flist'));
+}
+
+/* Highlight a YAML snippet; lines absent from `other` are marked as changed. */
+function yamlHTML(text, other) {
+  const otherLines = new Set((other || '').split('\n'));
+  return text.replace(/\n$/, '').split('\n').map(line => {
+    const chg = other !== undefined && !otherLines.has(line);
+    let h = esc(line)
+      .replace(/^(\s*(?:- )?)([^\s:#][^:]*?)(:)(?=\s|$)/, '$1<span class="yk">$2</span>$3')
+      .replace(/(:\s|- )(true|false|null|\d+|"&lt;[^"]*&gt;")$/, '$1<span class="yv-lit">$2</span>');
+    return `<span class="ln${chg ? ' chg' : ''}">${h || ' '}</span>`;
+  }).join('');
+}
+
+const ACTIONS = { patch: 'Fix: patch', create: 'Fix: create', replace: 'Fix: replace with', delete: 'Fix: delete' };
+
+function evidenceHTML(f) {
+  const e = f.evidence;
+  if (!e) return '';
+  const where = resName(e.target);
+  const found = e.found ? `<div class="ybox bad"><div class="yh"><span class="lbl">Found in ${esc(where)}</span><button class="copy" data-copy="${esc(e.found)}">Copy</button></div><pre><code>${yamlHTML(e.found, e.fix || '')}</code></pre></div>` : '';
+  const fix = e.fix ? `<div class="ybox good"><div class="yh"><span class="lbl">${esc(ACTIONS[e.action] || 'Fix')}${e.action === 'patch' ? ' ' + esc(where) : ''}</span><button class="copy" data-copy="${esc(e.fix)}">Copy</button></div><pre><code>${yamlHTML(e.fix, e.found || '')}</code></pre></div>`
+    : e.action === 'delete' ? `<div class="ybox good"><div class="yh"><span class="lbl">Fix: delete ${esc(where)}</span></div><pre><code><span class="ln">Nothing to keep. Remove the object.</span></code></pre></div>` : '';
+  const cmd = e.command ? `<div class="cmd"><span class="lbl">${e.command.startsWith('#') ? 'Note' : 'Apply'}</span><code>${esc(e.command.replace(/^# /, ''))}</code>${e.command.startsWith('#') ? '' : `<button class="copy" data-copy="${esc(e.command)}">Copy</button>`}</div>` : '';
+  return `<div class="yamls">${found}${fix}</div>${cmd}`;
+}
+
+function findingsHTML(fs, emptyMsg) {
+  if (!fs.length) return `<div class="panel empty">${esc(emptyMsg)}</div>`;
+  return fs.map(f => {
+    const key = f.policyId + '|' + resName(f.resource) + '|' + f.message;
+    const tech = (f.techniques || [])[0];
+    const refs = [
+      ...(f.techniques || []).map(t => `<a href="${esc(t.url)}" target="_blank" rel="noopener">ATT&amp;CK ${esc(t.id)} ${esc(t.name)}</a>`),
+      ...(f.matrixTechniques || []).map(t => `<a href="${esc(t.url)}" target="_blank" rel="noopener">Threat Matrix: ${esc(t.tactic)} › ${esc(t.name)}</a>`),
+      ...(f.references || []).map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\/(www\.)?/, '').split('/')[0])} docs</a>`),
+    ].join('');
+    return `<details class="panel fcard" data-key="${esc(key)}">
+      <summary>
+        <span class="sev" style="${sevStyle(f.severity)}">${f.severity}</span>
+        <span class="msg">${esc(f.message)}</span>
+        <span class="chev" aria-hidden="true">›</span>
+        <span class="ctx"><span class="res">${esc(resName(f.resource))}</span> · ${esc(f.tactic)}${tech ? ` · ${esc(tech.id)} ${esc(tech.name)}` : ''}</span>
+      </summary>
+      <div class="fbody">
+        ${f.remediation ? `<p class="why">${md(f.remediation)}</p>` : ''}
+        ${evidenceHTML(f)}
+        ${refs ? `<div class="refs">${refs}</div>` : ''}
+      </div>
+    </details>`;
+  }).join('');
+}
+
+function wireCopy(root) {
+  root.querySelectorAll('.copy').forEach(b => b.onclick = async (e) => {
+    e.preventDefault();
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copied'; }
+    catch { b.textContent = 'Copy failed'; }
+    setTimeout(() => b.textContent = 'Copy', 1500);
+  });
+}
+
+/* ---------- taxonomy ---------- */
+const TACTICS = ['Initial Access', 'Execution', 'Persistence', 'Privilege Escalation', 'Stealth', 'Defense Impairment',
+  'Credential Access', 'Discovery', 'Lateral Movement', 'Impact'];
+const tacticRank = (t) => { const i = TACTICS.indexOf(t); return i < 0 ? 99 : i; };
+function taxHTML(x, extra = '') {
+  const mitre = (x.techniques || []).map(t => `<a class="mitre" href="${esc(t.url)}" target="_blank" rel="noopener" title="MITRE ATT&amp;CK: ${esc(t.name)}"><span class="src">ATT&amp;CK</span><b>${esc(t.id)}</b>${esc(t.name)}</a>`).join('');
+  const tm = (x.matrixTechniques || []).map(t => `<a href="${esc(t.url)}" target="_blank" rel="noopener" title="Redguard Kubernetes Threat Matrix"><span class="src">Threat Matrix</span>${esc(t.tactic)} › ${esc(t.name)}</a>`).join('');
+  return `<div class="tax"><span class="t tactic">${esc(x.tactic)}</span>${mitre}${tm}${extra}</div>`;
+}
+const techText = (f) => [f.tactic, ...(f.techniques || []).flatMap(t => [t.id, t.name]), ...(f.matrixTechniques || []).map(t => t.name)].join(' ');
+
+/* ---------- policies ---------- */
+function toYAML(p) {
+  const block = (s, ind) => s.includes('\n') || s.length > 70 || /[:#'"{}\[\],&*!|>%@`]/.test(s)
+    ? '|\n' + s.trimEnd().split('\n').map(l => ind + l).join('\n') : s;
+  let y = `id: ${p.id}-copy\nname: ${p.name} (copy)\nseverity: ${p.severity}\ntactic: ${p.tactic}\n`;
+  if (p.mitre?.length) y += `mitre: [${p.mitre.join(', ')}]\n`;
+  if (p.threatMatrix?.length) y += `threatMatrix: [${p.threatMatrix.join(', ')}]\n`;
+  y += `match:\n  kinds: [${p.match.kinds.join(', ')}]\n`;
+  if (p.variables?.length) y += 'variables:\n' + p.variables.map(v => `  - name: ${v.name}\n    expression: ${block(v.expression, '      ')}`).join('\n') + '\n';
+  y += `violations: ${block(p.violations, '  ')}\n`;
+  if (p.message) y += `message: ${block(p.message, '  ')}\n`;
+  return y;
+}
+
+function renderPolicies() {
+  $('#pgExample').innerHTML = '<option value="">Start from a built-in policy…</option>' +
+    policies.map((p, i) => `<option value="${i}">${esc(p.id)}: ${esc(p.name)}</option>`).join('');
+  const byTactic = new Map();
+  [...policies].sort((a, b) => tacticRank(a.tactic) - tacticRank(b.tactic))
+    .forEach(p => { if (!byTactic.has(p.tactic)) byTactic.set(p.tactic, []); byTactic.get(p.tactic).push(p); });
+  $('#policyList').innerHTML = [...byTactic.entries()].map(([tactic, ps]) => `<h2 style="margin-top:18px">${esc(tactic)}</h2>` + ps.map(p => `
+    <details class="panel pol"><summary><span class="sev" style="${sevStyle(p.severity)}">${p.severity}</span><b>${esc(p.name)}</b><span class="pid" style="color:var(--muted)">${esc(p.id)} · ${esc(p.match.kinds.join(', '))}</span></summary>
+      ${taxHTML(p)}
+      ${p.description ? `<p>${md(p.description)}</p>` : ''}
+      ${(p.variables || []).map(v => `<div style="margin-top:8px"><b class="mono">variables.${esc(v.name)}</b><pre><code>${esc(v.expression)}</code></pre></div>`).join('')}
+      <div style="margin-top:8px"><b class="mono">violations</b><pre><code>${esc(p.violations)}</code></pre></div>
+      ${p.remediation ? `<div class="fix" style="margin-top:10px"><b>Fix:</b> ${md(p.remediation)}</div>` : ''}
+    </details>`).join('')).join('');
+}
+
+/* ---------- playground ---------- */
+$('#pgExample').onchange = (e) => { if (e.target.value !== '') $('#pgPolicy').value = toYAML(policies[+e.target.value]); };
+document.querySelectorAll('input[name=pgTarget]').forEach(r => r.onchange = () => { $('#pgManifests').disabled = r.value === 'live' && r.checked; });
+$('#pgRun').onclick = async () => {
+  const live = document.querySelector('input[name=pgTarget]:checked').value === 'live';
+  $('#pgRun').disabled = true; $('#pgOut').innerHTML = ''; $('#pgMeta').textContent = 'evaluating…';
+  try {
+    const rep = await api('/api/playground', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ policy: $('#pgPolicy').value, manifests: live ? '' : $('#pgManifests').value }) });
+    $('#pgMeta').textContent = `${rep.evaluations} objects evaluated · ${rep.summary.total} findings · ${rep.durationMs}ms`;
+    const errs = (rep.policyErrors || []).map(e => `${e.policyId} on ${resName(e.resource)}: ${e.error}`).join('\n');
+    $('#pgOut').innerHTML = (errs ? `<div class="err">Runtime errors:\n${esc(errs)}</div>` : '') + findingsHTML(rep.findings, `No findings (${rep.evaluations} objects evaluated).`);
+    wireCopy($('#pgOut'));
+  } catch (e) {
+    $('#pgMeta').textContent = '';
+    $('#pgOut').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally { $('#pgRun').disabled = false; }
+};
+$('#pgPolicy').value = `id: my-approved-registries
+name: Containers must come from an approved registry
+severity: high
+tactic: Execution
+mitre: [T1204.003]
+threatMatrix: [initial-access/compromised-images-in-registry]
+match:
+  kinds: [Workload]
+variables:
+  - name: allowed
+    expression: "['registry.k8s.io/', 'ghcr.io/my-org/', 'nginxinc/']"
+violations: |
+  containers
+    .filter(c, !variables.allowed.exists(prefix, c.image.startsWith(prefix)))
+    .map(c, 'container "' + c.name + '" uses image from unapproved registry: ' + c.image)
+`;
+$('#pgManifests').value = `apiVersion: v1
+kind: Pod
+metadata:
+  name: demo
+  namespace: team-a
+spec:
+  containers:
+    - name: app
+      image: docker.io/library/nginx:1.27
+    - name: sidecar
+      image: registry.k8s.io/pause:3.9
+`;
+
+$('#rescan').onclick = async () => {
+  $('#rescan').disabled = true;
+  await api('/api/scan', { method: 'POST' }).catch(() => {});
+  $('#statusText').innerHTML = '<span class="dot busy"></span>scanning…';
+  setTimeout(() => { $('#rescan').disabled = false; refresh(); }, 1500);
+};
+route();
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

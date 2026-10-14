@@ -1,0 +1,430 @@
+# RBAC policies.
+#
+# Only bindings are evaluated: a Role or ClusterRole grants nothing until
+# something binds it to a subject. Each binding is resolved against the role
+# it references (`cluster.clusterRoles` / `cluster.roles`), and
+# `rules.allows(verb, apiGroup, resource)` applies Kubernetes RBAC wildcard
+# semantics. Built-in bindings (label kubernetes.io/bootstrapping=rbac-defaults)
+# and system:/kubeadm: subjects are skipped. One finding per binding.
+
+id: admin-binding
+name: Admin-equivalent access granted
+severity: critical
+tactic: Privilege Escalation
+mitre: [T1098.006]
+threatMatrix: [privilege-escalation/cluster-admin-binding]
+description: >-
+  Binding cluster-admin, or any role that allows every verb on every resource, gives its subjects full control within the binding's scope.
+match:
+  kinds: [ClusterRoleBinding, RoleBinding]
+variables:
+  - name: builtin
+    expression: object.metadata.?labels[?'kubernetes.io/bootstrapping'].orValue('') == 'rbac-defaults'
+  - name: role
+    expression: |
+      (object.roleRef.kind == 'ClusterRole'
+        ? cluster.clusterRoles[?object.roleRef.name]
+        : cluster.roles[?object.metadata.?namespace.orValue('') + '/' + object.roleRef.name]).orValue({})
+  - name: rules
+    expression: variables.role.?rules.orValue([])
+  - name: admin
+    expression: object.roleRef.name == 'cluster-admin' || variables.rules.allows('*', '*', '*')
+  - name: subjects
+    expression: |
+      object.?subjects.orValue([]).filter(s, !s.name.startsWith('system:') && !s.name.startsWith('kubeadm:'))
+  - name: who
+    expression: |
+      variables.subjects.map(s, s.kind + ' ' + (has(s.namespace) ? s.namespace + '/' : '') + s.name).join(', ')
+  - name: via
+    expression: |
+      ' via ' + object.roleRef.kind + ' "' + object.roleRef.name + '"' +
+        (object.kind == 'ClusterRoleBinding' ? ' cluster-wide' : ' in namespace ' + object.metadata.namespace)
+  - name: bindingMeta
+    expression: "{'name': object.metadata.name, ?'namespace': object.metadata.?namespace}"
+violations: |
+  variables.builtin || !variables.admin || variables.subjects.size() == 0 ? [] : [{
+    'message': 'grants ' + variables.who + ' full admin rights' + variables.via,
+    'found': {'roleRef': object.roleRef, 'subjects': variables.subjects},
+    // roleRef is immutable, so the binding is replaced.
+    'fix': {
+      'apiVersion': 'rbac.authorization.k8s.io/v1',
+      'kind': object.kind,
+      'metadata': variables.bindingMeta,
+      'roleRef': {'apiGroup': 'rbac.authorization.k8s.io', 'kind': 'ClusterRole', 'name': 'view'},
+      'subjects': object.subjects
+    }
+  }]
+remediation: >-
+  Give day-to-day access through a narrower role (the fix uses the built-in read-only `view` role) and grant
+  admin rights just-in-time. CI should get only the verbs and resources it deploys.
+references:
+  - https://kubernetes.io/docs/concepts/security/rbac-good-practices/#least-privilege
+
+---
+id: anonymous-access
+name: Permissions granted to anonymous or all users
+severity: critical
+tactic: Initial Access
+mitre: [T1078.001]
+threatMatrix: [initial-access/exposed-sensitive-interfaces]
+description: >-
+  system:authenticated includes every user and every service account in the cluster; system:anonymous and
+  system:unauthenticated include anyone who can reach the API server.
+match:
+  kinds: [ClusterRoleBinding, RoleBinding]
+variables:
+  - name: builtin
+    expression: object.metadata.?labels[?'kubernetes.io/bootstrapping'].orValue('') == 'rbac-defaults'
+  - name: role
+    expression: |
+      (object.roleRef.kind == 'ClusterRole'
+        ? cluster.clusterRoles[?object.roleRef.name]
+        : cluster.roles[?object.metadata.?namespace.orValue('') + '/' + object.roleRef.name]).orValue({})
+  - name: rules
+    expression: variables.role.?rules.orValue([])
+  - name: admin
+    expression: object.roleRef.name == 'cluster-admin' || variables.rules.allows('*', '*', '*')
+  - name: subjects
+    expression: |
+      object.?subjects.orValue([]).filter(s, !s.name.startsWith('system:') && !s.name.startsWith('kubeadm:'))
+  - name: who
+    expression: |
+      variables.subjects.map(s, s.kind + ' ' + (has(s.namespace) ? s.namespace + '/' : '') + s.name).join(', ')
+  - name: via
+    expression: |
+      ' via ' + object.roleRef.kind + ' "' + object.roleRef.name + '"' +
+        (object.kind == 'ClusterRoleBinding' ? ' cluster-wide' : ' in namespace ' + object.metadata.namespace)
+  - name: bindingMeta
+    expression: "{'name': object.metadata.name, ?'namespace': object.metadata.?namespace}"
+  - name: everyone
+    expression: "['system:anonymous', 'system:unauthenticated', 'system:authenticated']"
+  - name: broad
+    expression: object.?subjects.orValue([]).filter(s, s.name in variables.everyone)
+  - name: rest
+    expression: object.?subjects.orValue([]).filter(s, !(s.name in variables.everyone))
+violations: |
+  variables.builtin || variables.broad.size() == 0 ? [] : [{
+    'message': 'grants ' + object.roleRef.kind + ' "' + object.roleRef.name + '" to ' + variables.broad.map(s, s.name).join(', '),
+    'found': {'roleRef': object.roleRef, 'subjects': variables.broad},
+    'action': variables.rest.size() > 0 ? 'replace' : 'delete',
+    'fix': variables.rest.size() > 0 ? dyn({
+      'apiVersion': 'rbac.authorization.k8s.io/v1',
+      'kind': object.kind,
+      'metadata': variables.bindingMeta,
+      'roleRef': object.roleRef,
+      'subjects': variables.rest
+    }) : dyn(null)
+  }]
+remediation: >-
+  Remove the broad group from the binding (or delete the binding) and grant the permissions to specific
+  users, groups or service accounts.
+
+---
+id: secrets-access
+name: Secrets readable
+severity: high
+tactic: Credential Access
+mitre: [T1552.007]
+threatMatrix: [credential-access/list-k8s-secrets]
+description: >-
+  get/list/watch on Secrets exposes every credential in scope, including tokens of more privileged service accounts. `list` returns secret contents too.
+match:
+  kinds: [ClusterRoleBinding, RoleBinding]
+variables:
+  - name: builtin
+    expression: object.metadata.?labels[?'kubernetes.io/bootstrapping'].orValue('') == 'rbac-defaults'
+  - name: role
+    expression: |
+      (object.roleRef.kind == 'ClusterRole'
+        ? cluster.clusterRoles[?object.roleRef.name]
+        : cluster.roles[?object.metadata.?namespace.orValue('') + '/' + object.roleRef.name]).orValue({})
+  - name: rules
+    expression: variables.role.?rules.orValue([])
+  - name: admin
+    expression: object.roleRef.name == 'cluster-admin' || variables.rules.allows('*', '*', '*')
+  - name: subjects
+    expression: |
+      object.?subjects.orValue([]).filter(s, !s.name.startsWith('system:') && !s.name.startsWith('kubeadm:'))
+  - name: who
+    expression: |
+      variables.subjects.map(s, s.kind + ' ' + (has(s.namespace) ? s.namespace + '/' : '') + s.name).join(', ')
+  - name: via
+    expression: |
+      ' via ' + object.roleRef.kind + ' "' + object.roleRef.name + '"' +
+        (object.kind == 'ClusterRoleBinding' ? ' cluster-wide' : ' in namespace ' + object.metadata.namespace)
+  - name: bindingMeta
+    expression: "{'name': object.metadata.name, ?'namespace': object.metadata.?namespace}"
+  - name: checks
+    expression: |
+      [
+        ['get', '', 'secrets', 'get secrets'],
+        ['list', '', 'secrets', 'list secrets'],
+        ['watch', '', 'secrets', 'watch secrets']
+      ]
+  - name: found
+    expression: variables.checks.filter(c, variables.rules.allows(c[0], c[1], c[2])).map(c, c[3])
+  # Rules that grant something risky, and the same rules with only the risky verbs removed.
+  - name: riskyRules
+    expression: variables.rules.filter(r, variables.checks.exists(c, [r].allows(c[0], c[1], c[2])))
+  - name: fixedRules
+    expression: |
+      variables.rules.map(r, cel.bind(risky,
+        r.?resources.orValue([]).filter(res, variables.checks.exists(c,
+          [{'apiGroups': r.?apiGroups.orValue([]), 'resources': [res], 'verbs': r.?verbs.orValue([])}].allows(c[0], c[1], c[2]))),
+        cel.bind(drop, variables.checks.filter(c, [r].allows(c[0], c[1], c[2])).map(c, c[0]),
+          risky.size() == 0 ? [r] :
+            // Resources that are not risky keep every verb ...
+            (r.resources.filter(res, !(res in risky)).size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': r.resources.filter(res, !(res in risky)),
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs}]) +
+            // ... risky ones lose only the risky verbs.
+            (r.verbs.filter(v, !(v in drop) && v != '*').size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': risky,
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs.filter(v, !(v in drop) && v != '*')}])
+        ))).flatten()
+violations: |
+  // Admin-equivalent grants are reported once, by admin-binding.
+  variables.builtin || variables.admin || variables.found.size() == 0 || variables.subjects.size() == 0 ? [] : [{
+    'message': 'grants ' + variables.who + ' the ability to ' + variables.found.join(', ') + variables.via,
+    'target': {'kind': object.roleRef.kind, 'name': object.roleRef.name,
+               ?'namespace': object.roleRef.kind == 'Role' ? object.metadata.?namespace : optional.none()},
+    'found': {'rules': variables.riskyRules},
+    'fix': {'rules': variables.fixedRules}
+  }]
+remediation: >-
+  Remove the Secrets verbs from the role (the patch keeps every other permission), or restrict them with `resourceNames` to the specific secrets needed.
+
+---
+id: exec-into-containers
+name: Exec into containers
+severity: high
+tactic: Execution
+mitre: [T1609]
+threatMatrix: [execution/exec-into-container, discovery/access-kubelet-api]
+description: >-
+  pods/exec, pods/attach and nodes/proxy let a subject run commands inside any container in scope, with that container's secrets and service account token.
+match:
+  kinds: [ClusterRoleBinding, RoleBinding]
+variables:
+  - name: builtin
+    expression: object.metadata.?labels[?'kubernetes.io/bootstrapping'].orValue('') == 'rbac-defaults'
+  - name: role
+    expression: |
+      (object.roleRef.kind == 'ClusterRole'
+        ? cluster.clusterRoles[?object.roleRef.name]
+        : cluster.roles[?object.metadata.?namespace.orValue('') + '/' + object.roleRef.name]).orValue({})
+  - name: rules
+    expression: variables.role.?rules.orValue([])
+  - name: admin
+    expression: object.roleRef.name == 'cluster-admin' || variables.rules.allows('*', '*', '*')
+  - name: subjects
+    expression: |
+      object.?subjects.orValue([]).filter(s, !s.name.startsWith('system:') && !s.name.startsWith('kubeadm:'))
+  - name: who
+    expression: |
+      variables.subjects.map(s, s.kind + ' ' + (has(s.namespace) ? s.namespace + '/' : '') + s.name).join(', ')
+  - name: via
+    expression: |
+      ' via ' + object.roleRef.kind + ' "' + object.roleRef.name + '"' +
+        (object.kind == 'ClusterRoleBinding' ? ' cluster-wide' : ' in namespace ' + object.metadata.namespace)
+  - name: bindingMeta
+    expression: "{'name': object.metadata.name, ?'namespace': object.metadata.?namespace}"
+  - name: checks
+    expression: |
+      [
+        ['create', '', 'pods/exec', 'exec into pods'],
+        ['get', '', 'pods/exec', 'exec into pods (websocket)'],
+        ['create', '', 'pods/attach', 'attach to pods'],
+        ['get', '', 'nodes/proxy', 'call the kubelet API']
+      ]
+  - name: found
+    expression: variables.checks.filter(c, variables.rules.allows(c[0], c[1], c[2])).map(c, c[3])
+  # Rules that grant something risky, and the same rules with only the risky verbs removed.
+  - name: riskyRules
+    expression: variables.rules.filter(r, variables.checks.exists(c, [r].allows(c[0], c[1], c[2])))
+  - name: fixedRules
+    expression: |
+      variables.rules.map(r, cel.bind(risky,
+        r.?resources.orValue([]).filter(res, variables.checks.exists(c,
+          [{'apiGroups': r.?apiGroups.orValue([]), 'resources': [res], 'verbs': r.?verbs.orValue([])}].allows(c[0], c[1], c[2]))),
+        cel.bind(drop, variables.checks.filter(c, [r].allows(c[0], c[1], c[2])).map(c, c[0]),
+          risky.size() == 0 ? [r] :
+            // Resources that are not risky keep every verb ...
+            (r.resources.filter(res, !(res in risky)).size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': r.resources.filter(res, !(res in risky)),
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs}]) +
+            // ... risky ones lose only the risky verbs.
+            (r.verbs.filter(v, !(v in drop) && v != '*').size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': risky,
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs.filter(v, !(v in drop) && v != '*')}])
+        ))).flatten()
+violations: |
+  // Admin-equivalent grants are reported once, by admin-binding.
+  variables.builtin || variables.admin || variables.found.size() == 0 || variables.subjects.size() == 0 ? [] : [{
+    'message': 'grants ' + variables.who + ' the ability to ' + variables.found.join(', ') + variables.via,
+    'target': {'kind': object.roleRef.kind, 'name': object.roleRef.name,
+               ?'namespace': object.roleRef.kind == 'Role' ? object.metadata.?namespace : optional.none()},
+    'found': {'rules': variables.riskyRules},
+    'fix': {'rules': variables.fixedRules}
+  }]
+remediation: >-
+  Remove exec/attach/nodes/proxy from roles used by applications and CI (the patch keeps every other permission). Grant them to humans just-in-time instead.
+
+---
+id: workload-creation
+name: Can deploy containers
+severity: medium
+tactic: Execution
+mitre: [T1610]
+threatMatrix: [execution/new-container]
+description: >-
+  Anyone who can create pods, directly or through a controller, can run privileged containers and mount any service account or Secret in the namespace unless Pod Security Admission blocks it.
+match:
+  kinds: [ClusterRoleBinding, RoleBinding]
+variables:
+  - name: builtin
+    expression: object.metadata.?labels[?'kubernetes.io/bootstrapping'].orValue('') == 'rbac-defaults'
+  - name: role
+    expression: |
+      (object.roleRef.kind == 'ClusterRole'
+        ? cluster.clusterRoles[?object.roleRef.name]
+        : cluster.roles[?object.metadata.?namespace.orValue('') + '/' + object.roleRef.name]).orValue({})
+  - name: rules
+    expression: variables.role.?rules.orValue([])
+  - name: admin
+    expression: object.roleRef.name == 'cluster-admin' || variables.rules.allows('*', '*', '*')
+  - name: subjects
+    expression: |
+      object.?subjects.orValue([]).filter(s, !s.name.startsWith('system:') && !s.name.startsWith('kubeadm:'))
+  - name: who
+    expression: |
+      variables.subjects.map(s, s.kind + ' ' + (has(s.namespace) ? s.namespace + '/' : '') + s.name).join(', ')
+  - name: via
+    expression: |
+      ' via ' + object.roleRef.kind + ' "' + object.roleRef.name + '"' +
+        (object.kind == 'ClusterRoleBinding' ? ' cluster-wide' : ' in namespace ' + object.metadata.namespace)
+  - name: bindingMeta
+    expression: "{'name': object.metadata.name, ?'namespace': object.metadata.?namespace}"
+  - name: checks
+    expression: |
+      [
+        ['create', '', 'pods', 'pods'],
+        ['create', 'apps', 'deployments', 'deployments'],
+        ['create', 'apps', 'daemonsets', 'daemonsets'],
+        ['create', 'apps', 'statefulsets', 'statefulsets'],
+        ['create', 'batch', 'jobs', 'jobs'],
+        ['create', 'batch', 'cronjobs', 'cronjobs']
+      ]
+  - name: found
+    expression: variables.checks.filter(c, variables.rules.allows(c[0], c[1], c[2])).map(c, c[3])
+  # Rules that grant something risky, and the same rules with only the risky verbs removed.
+  - name: riskyRules
+    expression: variables.rules.filter(r, variables.checks.exists(c, [r].allows(c[0], c[1], c[2])))
+  - name: fixedRules
+    expression: |
+      variables.rules.map(r, cel.bind(risky,
+        r.?resources.orValue([]).filter(res, variables.checks.exists(c,
+          [{'apiGroups': r.?apiGroups.orValue([]), 'resources': [res], 'verbs': r.?verbs.orValue([])}].allows(c[0], c[1], c[2]))),
+        cel.bind(drop, variables.checks.filter(c, [r].allows(c[0], c[1], c[2])).map(c, c[0]),
+          risky.size() == 0 ? [r] :
+            // Resources that are not risky keep every verb ...
+            (r.resources.filter(res, !(res in risky)).size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': r.resources.filter(res, !(res in risky)),
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs}]) +
+            // ... risky ones lose only the risky verbs.
+            (r.verbs.filter(v, !(v in drop) && v != '*').size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': risky,
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs.filter(v, !(v in drop) && v != '*')}])
+        ))).flatten()
+violations: |
+  // Admin-equivalent grants are reported once, by admin-binding.
+  variables.builtin || variables.admin || variables.found.size() == 0 || variables.subjects.size() == 0 ? [] : [{
+    'message': 'grants ' + variables.who + ' the ability to create ' + variables.found.join(', ') + variables.via,
+    'target': {'kind': object.roleRef.kind, 'name': object.roleRef.name,
+               ?'namespace': object.roleRef.kind == 'Role' ? object.metadata.?namespace : optional.none()},
+    'found': {'rules': variables.riskyRules},
+    'fix': {'rules': variables.fixedRules}
+  }]
+remediation: >-
+  If the subject only updates existing workloads, drop `create` (the patch does this). If it must create them, keep the role but enforce the `restricted` Pod Security Standard on the namespace: `kubectl label ns <namespace> pod-security.kubernetes.io/enforce=restricted`.
+
+---
+id: rbac-escalation
+name: Can escalate RBAC privileges
+severity: high
+tactic: Privilege Escalation
+mitre: [T1098.006, T1078]
+threatMatrix: [privilege-escalation/cluster-admin-binding]
+description: >-
+  escalate, bind, impersonate and creating bindings let a subject grant itself (or become) a more privileged identity, bypassing RBAC's escalation protection.
+match:
+  kinds: [ClusterRoleBinding, RoleBinding]
+variables:
+  - name: builtin
+    expression: object.metadata.?labels[?'kubernetes.io/bootstrapping'].orValue('') == 'rbac-defaults'
+  - name: role
+    expression: |
+      (object.roleRef.kind == 'ClusterRole'
+        ? cluster.clusterRoles[?object.roleRef.name]
+        : cluster.roles[?object.metadata.?namespace.orValue('') + '/' + object.roleRef.name]).orValue({})
+  - name: rules
+    expression: variables.role.?rules.orValue([])
+  - name: admin
+    expression: object.roleRef.name == 'cluster-admin' || variables.rules.allows('*', '*', '*')
+  - name: subjects
+    expression: |
+      object.?subjects.orValue([]).filter(s, !s.name.startsWith('system:') && !s.name.startsWith('kubeadm:'))
+  - name: who
+    expression: |
+      variables.subjects.map(s, s.kind + ' ' + (has(s.namespace) ? s.namespace + '/' : '') + s.name).join(', ')
+  - name: via
+    expression: |
+      ' via ' + object.roleRef.kind + ' "' + object.roleRef.name + '"' +
+        (object.kind == 'ClusterRoleBinding' ? ' cluster-wide' : ' in namespace ' + object.metadata.namespace)
+  - name: bindingMeta
+    expression: "{'name': object.metadata.name, ?'namespace': object.metadata.?namespace}"
+  - name: checks
+    expression: |
+      [
+        ['escalate', 'rbac.authorization.k8s.io', 'clusterroles', 'escalate clusterroles'],
+        ['escalate', 'rbac.authorization.k8s.io', 'roles', 'escalate roles'],
+        ['bind', 'rbac.authorization.k8s.io', 'clusterroles', 'bind clusterroles'],
+        ['bind', 'rbac.authorization.k8s.io', 'roles', 'bind roles'],
+        ['create', 'rbac.authorization.k8s.io', 'clusterrolebindings', 'create clusterrolebindings'],
+        ['create', 'rbac.authorization.k8s.io', 'rolebindings', 'create rolebindings'],
+        ['impersonate', '', 'users', 'impersonate users'],
+        ['impersonate', '', 'groups', 'impersonate groups'],
+        ['impersonate', '', 'serviceaccounts', 'impersonate service accounts']
+      ]
+  - name: found
+    expression: variables.checks.filter(c, variables.rules.allows(c[0], c[1], c[2])).map(c, c[3])
+  # Rules that grant something risky, and the same rules with only the risky verbs removed.
+  - name: riskyRules
+    expression: variables.rules.filter(r, variables.checks.exists(c, [r].allows(c[0], c[1], c[2])))
+  - name: fixedRules
+    expression: |
+      variables.rules.map(r, cel.bind(risky,
+        r.?resources.orValue([]).filter(res, variables.checks.exists(c,
+          [{'apiGroups': r.?apiGroups.orValue([]), 'resources': [res], 'verbs': r.?verbs.orValue([])}].allows(c[0], c[1], c[2]))),
+        cel.bind(drop, variables.checks.filter(c, [r].allows(c[0], c[1], c[2])).map(c, c[0]),
+          risky.size() == 0 ? [r] :
+            // Resources that are not risky keep every verb ...
+            (r.resources.filter(res, !(res in risky)).size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': r.resources.filter(res, !(res in risky)),
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs}]) +
+            // ... risky ones lose only the risky verbs.
+            (r.verbs.filter(v, !(v in drop) && v != '*').size() == 0 ? [] : [{
+              ?'apiGroups': r.?apiGroups, 'resources': risky,
+              ?'resourceNames': r.?resourceNames, 'verbs': r.verbs.filter(v, !(v in drop) && v != '*')}])
+        ))).flatten()
+violations: |
+  // Admin-equivalent grants are reported once, by admin-binding.
+  variables.builtin || variables.admin || variables.found.size() == 0 || variables.subjects.size() == 0 ? [] : [{
+    'message': 'grants ' + variables.who + ' the ability to ' + variables.found.join(', ') + variables.via,
+    'target': {'kind': object.roleRef.kind, 'name': object.roleRef.name,
+               ?'namespace': object.roleRef.kind == 'Role' ? object.metadata.?namespace : optional.none()},
+    'found': {'rules': variables.riskyRules},
+    'fix': {'rules': variables.fixedRules}
+  }]
+remediation: >-
+  Remove `escalate`, `bind`, `impersonate` and binding creation from the role (the patch keeps every other permission). Only RBAC-managing automation should have them.

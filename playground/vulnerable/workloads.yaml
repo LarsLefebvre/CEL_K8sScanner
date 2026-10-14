@@ -1,0 +1,82 @@
+# Deliberately insecure workloads for the kscan playground.
+# DO NOT deploy these anywhere but a throwaway local cluster.
+#
+# Expected findings: privileged-container (critical) and hostpath-mount (high).
+
+# A web app that follows good practice: no findings.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-api
+  namespace: vuln-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: legacy-api}
+  template:
+    metadata:
+      labels: {app: legacy-api}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+      containers:
+        - name: api
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - containerPort: 8080
+---
+# A "log collector" someone made privileged "to make it work", reading the
+# node's logs through a hostPath mount.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+  namespace: vuln-demo
+spec:
+  selector:
+    matchLabels: {app: node-agent}
+  template:
+    metadata:
+      labels: {app: node-agent}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: agent
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep infinity"]
+          securityContext:
+            privileged: true
+          resources:
+            limits: {cpu: 50m, memory: 32Mi}
+          volumeMounts:
+            - {name: node-logs, mountPath: /host/var/log}
+      volumes:
+        - name: node-logs
+          hostPath: {path: /var/log}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-api
+  namespace: vuln-demo
+spec:
+  selector: {app: legacy-api}
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-legacy-api
+  namespace: vuln-demo
+spec:
+  podSelector:
+    matchLabels: {app: legacy-api}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8080

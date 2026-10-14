@@ -1,0 +1,12 @@
+# kscan only needs: inbound HTTP (UI/API/metrics) and outbound to the API server + DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kscan
+spec:
+  podSelector:
+    matchLabels: {app: kscan}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8080

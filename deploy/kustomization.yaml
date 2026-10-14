@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kscan
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - deployment.yaml
+  - networkpolicy.yaml
+images:
+  - name: kscan
+    newName: kscan
+    newTag: dev
+# Organisation-specific policies, mounted into the pod and hot-reloaded on
+# every scan. Edit the files and `kubectl apply -k deploy/` - no rebuild.
+configMapGenerator:
+  - name: kscan-policies
+    files:
+      - custom-policies/org-policies.yaml
+generatorOptions:
+  disableNameSuffixHash: true

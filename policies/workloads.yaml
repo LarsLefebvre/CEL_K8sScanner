@@ -1,0 +1,223 @@
+# Workload policies.
+#
+# Every policy maps to MITRE ATT&CK (Containers matrix) technique IDs and
+# Redguard Kubernetes Threat Matrix techniques; both are validated against
+# internal/taxonomy at load time.
+#
+# `violations` returns one map per problem:
+#   message  what is wrong
+#   path     where `found`/`fix` live in the object (podSpecPath = the pod spec)
+#   found    the offending YAML fragment
+#   fix      the corrected fragment: a strategic-merge patch for the object
+#            (containers/volumes merge by name), or a full manifest
+#
+# `Workload` matches top-level pod producers (Deployment, StatefulSet,
+# DaemonSet, CronJob, and unowned Pods/ReplicaSets/Jobs). `containers` holds
+# init, regular and ephemeral containers of the pod spec.
+
+id: privileged-container
+name: Privileged container
+severity: critical
+tactic: Privilege Escalation
+mitre: [T1611]
+threatMatrix: [privilege-escalation/privileged-container]
+description: Privileged containers have all capabilities and full access to host devices; a compromise is equivalent to root on the node.
+match:
+  kinds: [Workload]
+variables:
+  - name: initNames
+    expression: podSpec.?initContainers.orValue([]).map(i, i.name)
+violations: |
+  containers
+    .filter(c, c.?securityContext.?privileged.orValue(false))
+    .map(c, {
+      'message': 'container "' + c.name + '" runs privileged',
+      'path': podSpecPath,
+      'found': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+        {'name': c.name, 'securityContext': {'privileged': true}}]},
+      'fix': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+        {'name': c.name, 'securityContext': {
+          'privileged': false,
+          'allowPrivilegeEscalation': false,
+          'capabilities': {'drop': ['ALL']}}}]}
+    })
+remediation: >-
+  Turn off privileged mode and drop all capabilities. If the process needs one specific capability
+  (for example NET_ADMIN), add only that one under `capabilities.add`.
+references:
+  - https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline
+---
+id: host-namespaces
+name: Host namespaces shared
+severity: high
+tactic: Privilege Escalation
+mitre: [T1611]
+threatMatrix: [privilege-escalation/disable-namespacing]
+description: hostNetwork, hostPID and hostIPC remove the namespace isolation between the pod and the node.
+match:
+  kinds: [Workload]
+variables:
+  - name: shared
+    expression: |
+      {
+        'hostNetwork': podSpec.?hostNetwork.orValue(false) == true,
+        'hostPID': podSpec.?hostPID.orValue(false) == true,
+        'hostIPC': podSpec.?hostIPC.orValue(false) == true
+      }
+violations: |
+  !variables.shared.exists(k, variables.shared[k]) ? [] : [{
+    'message': 'pod shares the node\'s ' + ['hostNetwork', 'hostPID', 'hostIPC'].filter(k, variables.shared[k]).join(', '),
+    'path': podSpecPath,
+    'found': {
+      ?'hostNetwork': variables.shared.hostNetwork ? optional.of(true) : optional.none(),
+      ?'hostPID': variables.shared.hostPID ? optional.of(true) : optional.none(),
+      ?'hostIPC': variables.shared.hostIPC ? optional.of(true) : optional.none()
+    },
+    'fix': {
+      ?'hostNetwork': variables.shared.hostNetwork ? optional.of(false) : optional.none(),
+      ?'hostPID': variables.shared.hostPID ? optional.of(false) : optional.none(),
+      ?'hostIPC': variables.shared.hostIPC ? optional.of(false) : optional.none()
+    }
+  }]
+remediation: >-
+  Turn off host namespaces. Node agents that truly need them belong in a dedicated, locked-down namespace.
+references:
+  - https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline
+---
+id: hostpath-mount
+name: hostPath volume mounted
+severity: high
+tactic: Privilege Escalation
+mitre: [T1611]
+threatMatrix:
+  - privilege-escalation/hostpath-mount
+  - persistence/writable-hostpath-mount
+  - lateral-movement/writable-volume-mounts-on-the-host
+description: hostPath volumes expose the node filesystem. Writable mounts of sensitive paths, or of the container runtime socket, lead to node takeover.
+match:
+  kinds: [Workload]
+variables:
+  - name: sockets
+    expression: "['/var/run/docker.sock', '/run/docker.sock', '/var/run/containerd/containerd.sock', '/run/containerd/containerd.sock', '/var/run/crio/crio.sock', '/run/crio/crio.sock']"
+violations: |
+  podSpec.?volumes.orValue([])
+    .filter(v, has(v.hostPath))
+    .map(v, {
+      'message': v.hostPath.path in variables.sockets
+        ? 'volume "' + v.name + '" mounts the container runtime socket ' + v.hostPath.path
+        : 'volume "' + v.name + '" mounts host path ' + v.hostPath.path,
+      'path': podSpecPath,
+      'found': {'volumes': [{'name': v.name, 'hostPath': v.hostPath}]},
+      // `hostPath: null` removes the field in a strategic-merge patch.
+      'fix': {'volumes': [{'name': v.name, 'hostPath': null, 'emptyDir': {}}]}
+    })
+remediation: >-
+  Replace the hostPath with an emptyDir (scratch space) or a PersistentVolumeClaim (data that must survive).
+  Never mount the runtime socket.
+references:
+  - https://kubernetes.io/docs/concepts/storage/volumes/#hostpath
+---
+id: run-as-root
+name: Container may run as root
+severity: high
+tactic: Privilege Escalation
+mitre: [T1611, T1068]
+description: Root inside the container turns many kernel or runtime vulnerabilities into a host escape. Pod-level securityContext is used as the fallback for container-level settings.
+match:
+  kinds: [Workload]
+variables:
+  - name: podNonRoot
+    expression: podSpec.?securityContext.?runAsNonRoot.orValue(false)
+  - name: podUser
+    expression: podSpec.?securityContext.?runAsUser.orValue(-1)
+  - name: initNames
+    expression: podSpec.?initContainers.orValue([]).map(i, i.name)
+violations: |
+  containers
+    .filter(c,
+      c.?securityContext.?runAsUser.orValue(variables.podUser) == 0 ||
+      (c.?securityContext.?runAsUser.orValue(variables.podUser) < 0 &&
+       !c.?securityContext.?runAsNonRoot.orValue(variables.podNonRoot)))
+    .map(c, {
+      'message': c.?securityContext.?runAsUser.orValue(variables.podUser) == 0
+        ? 'container "' + c.name + '" explicitly runs as UID 0'
+        : 'container "' + c.name + '" may run as root (no runAsNonRoot / runAsUser)',
+      'path': podSpecPath,
+      'found': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+        {'name': c.name, 'securityContext': c.?securityContext.orValue({})}]},
+      'fix': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+        {'name': c.name, 'securityContext': {'runAsNonRoot': true, 'runAsUser': 10001}}]}
+    })
+remediation: >-
+  Run as a non-root UID. Pick a UID the image supports (many official images ship a non-root user),
+  or build the image with a non-root `USER`.
+references:
+  - https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+---
+id: plaintext-credentials-in-env
+name: Credentials in pod configuration
+severity: high
+tactic: Credential Access
+mitre: [T1552.007]
+threatMatrix:
+  - credential-access/applications-credentials-in-configuration-files
+  - lateral-movement/applications-credentials-in-configuration-files
+description: Literal credentials in env vars are stored in the pod spec and readable by anyone who can get the workload through the Kubernetes API.
+match:
+  kinds: [Workload]
+variables:
+  - name: sensitive
+    expression: "['PASSWORD', 'PASSWD', 'SECRET', 'TOKEN', 'API_KEY', 'APIKEY', 'PRIVATE_KEY', 'ACCESS_KEY', 'CREDENTIALS']"
+  - name: initNames
+    expression: podSpec.?initContainers.orValue([]).map(i, i.name)
+violations: |
+  containers.map(c,
+    c.?env.orValue([])
+      .filter(e, has(e.value) && e.value != '' &&
+                 variables.sensitive.exists(s, e.name.upperAscii().contains(s)))
+      .map(e, {
+        'message': 'container "' + c.name + '" sets ' + e.name + ' as a literal value',
+        'path': podSpecPath,
+        // The value itself is never shown.
+        'found': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+          {'name': c.name, 'env': [{'name': e.name, 'value': '<redacted>'}]}]},
+        'fix': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+          {'name': c.name, 'env': [{'name': e.name, 'value': null, 'valueFrom': {'secretKeyRef': {
+            'name': object.metadata.name + '-credentials', 'key': e.name}}}]}]}
+      })
+  ).flatten()
+remediation: >-
+  First store the value in a Secret, for example
+  `kubectl create secret generic <name>-credentials --from-literal=<KEY>=...`, then apply the patch so the
+  container reads it with `valueFrom.secretKeyRef`. Rotate the exposed credential.
+---
+id: mutable-image-tag
+name: Mutable image tag
+severity: medium
+tactic: Persistence
+mitre: [T1525, T1204.003]
+threatMatrix: [initial-access/compromised-images-in-registry]
+description: Images referenced by ':latest' or without a tag can be silently replaced in the registry, so a backdoored image is pulled on the next restart.
+match:
+  kinds: [Workload]
+variables:
+  - name: initNames
+    expression: podSpec.?initContainers.orValue([]).map(i, i.name)
+violations: |
+  containers
+    .filter(c, !c.image.contains('@') && (
+      c.image.endsWith(':latest') ||
+      !c.image.substring(c.image.lastIndexOf('/') + 1).contains(':')))
+    .map(c, {
+      'message': 'container "' + c.name + '" uses mutable image "' + c.image + '"',
+      'path': podSpecPath,
+      'found': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+        {'name': c.name, 'image': c.image}]},
+      'fix': {(c.name in variables.initNames ? 'initContainers' : 'containers'): [
+        {'name': c.name, 'image':
+          (c.image.endsWith(':latest') ? c.image.substring(0, c.image.size() - 7) : c.image) +
+          ':<version>@sha256:<digest>'}]}
+    })
+remediation: >-
+  Pin the image to a version and its digest. Look up the digest with
+  `docker buildx imagetools inspect <image>:<version>` (or `crane digest`), then replace the placeholders.
