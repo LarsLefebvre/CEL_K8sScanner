@@ -1,6 +1,6 @@
 # kscan
 
-A Kubernetes security scanner written in Go. It reads your cluster through the Kubernetes API (read-only, no access to Secrets), checks it with **CEL policies** mapped to [MITRE ATT&CK](https://attack.mitre.org/matrices/enterprise/containers/) and the [Kubernetes Threat Matrix](https://kubernetes-threat-matrix.redguard.ch/), and shows every finding with the the fixed YAML to apply it (based on business needs)
+A Kubernetes security scanner written in Go. It reads your cluster through the Kubernetes API, checks it with **CEL policies** mapped to [MITRE ATT&CK](https://attack.mitre.org/matrices/enterprise/containers/) and the [Kubernetes Threat Matrix](https://kubernetes-threat-matrix.redguard.ch/), and shows every finding with the the fixed YAML to apply it (based on business needs)
 
 https://github.com/user-attachments/assets/949390e0-9e61-4d92-8d2b-859f52b75a0d
 
